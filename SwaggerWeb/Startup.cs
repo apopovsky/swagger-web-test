@@ -1,21 +1,21 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace SwaggerWeb
 {
+    using System.Collections.Generic;
     using System.IO;
+    using System.Linq;
     using System.Reflection;
+    using System.Xml.XPath;
     using Microsoft.AspNetCore.Http;
+    using Microsoft.AspNetCore.Mvc.ApiExplorer;
     using Microsoft.AspNetCore.Routing;
     using Swashbuckle.AspNetCore.Swagger;
+    using Swashbuckle.AspNetCore.SwaggerGen;
 
     public class Startup
     {
@@ -36,6 +36,7 @@ namespace SwaggerWeb
                 var fileName = GetType().GetTypeInfo().Module.Name.Replace(".dll", ".xml").Replace(".exe", ".xml");
                 o.IncludeXmlComments(Path.Combine(AppContext.BaseDirectory, fileName));
                 o.SwaggerDoc("v1", new Info { Title = "My API", Version = "v1" });
+                o.OperationFilter<OpFilter>(Path.Combine(AppContext.BaseDirectory, fileName));
             }).Configure<RouteOptions>(o =>
             {
                 o.ConstraintMap.Add(SectorRouteConstraint.Key, typeof(SectorRouteConstraint));
@@ -59,6 +60,49 @@ namespace SwaggerWeb
                         "V1");
                 })
                 .UseMvc();
+        }
+    }
+
+    public class OpFilter:IOperationFilter
+    {
+        private readonly XPathNavigator _xmlNavigator;
+        private const string MemberXPath = "/doc/members/member[@name='{0}']";
+        private const string SummaryXPath = "summary";
+     
+            
+        public OpFilter(string filePath)
+        {
+            XPathDocument xmlDoc = new XPathDocument(filePath);
+            _xmlNavigator = xmlDoc.CreateNavigator();
+        }
+
+
+        public void Apply(Operation operation, OperationFilterContext context)
+        {
+            ApplyConstraintsXmlToActionParameters(operation.Parameters, context.ApiDescription);
+        }
+
+        private void ApplyConstraintsXmlToActionParameters(IList<IParameter> parameters, ApiDescription apiDescription)
+        {
+            var nonBodyParameters = parameters.OfType<NonBodyParameter>();
+            foreach (var parameter in nonBodyParameters)
+            {                // Check for a corresponding action parameter?
+                var actionParameter = apiDescription.ParameterDescriptions.FirstOrDefault(p =>
+                    parameter.Name.Equals(p.Name, StringComparison.OrdinalIgnoreCase));
+                if (actionParameter == null) continue;
+
+                if (!actionParameter.RouteInfo.Constraints.Any()) continue;
+
+                var constraintType = actionParameter.RouteInfo.Constraints.FirstOrDefault().GetType();
+                var commentIdForType = XmlCommentsIdHelper.GetCommentIdForType(constraintType);
+                var constraintSummaryNode = _xmlNavigator
+                    .SelectSingleNode(string.Format(MemberXPath, commentIdForType))
+                    ?.SelectSingleNode(SummaryXPath);
+                if (constraintSummaryNode != null)
+                {
+                    parameter.Description = XmlCommentsTextHelper.Humanize(constraintSummaryNode.InnerXml);
+                }
+            }
         }
     }
 
